@@ -14,21 +14,20 @@
  * limitations under the License.
  */
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "drv_uart.h"
 #include <sys/attribs.h>
 #include <xc.h>
 
 struct drv_uartHandle {
-    uartDevices_t uartDev;      /**<Desired uart device to initialize, only UARTDEV1 is supported atm*/
-    bool blocking : 1;          /**<Use interrupts? must be on(1) for now*/
-    callback onReceive;         /**<Function to execute if the receive buffer is full*/
-    volatile uint8_t *buffer;   /**<Buffer with the received uart data*/
-    volatile uint8_t bufIndex;  /**<Keeps tracks of the index of the buffer*/
+    uartDevices_t uartDev;              /**<Desired uart device to initialize, only UARTDEV1 is supported atm*/
+    bool blocking : 1;                  /**<Use interrupts? must be on(1) for now*/
+    drv_uartEventHandler_t onReceive;   /**<Function to execute if the receive buffer is full*/
+    QueueHandle_t queueHandle;          /**<UART fifo buffer*/
 };
 
-volatile uint8_t *uartBuf[NUM_UARTS] = {0};
-
-drv_uartEventHandler_t handlers[NUM_UARTS] = {0};
+drv_uartHandle_t handlers[NUM_UARTS] = {0};
 
 /**
  * Local function to calculate the baudrate according to the datasheet
@@ -101,31 +100,16 @@ static void uartModeClrFlags(drv_uartHandle_t handle, uint32_t flags)
     }
 }
 
-static void registerBuffer(drv_uartHandle_t handle)
-{
-    uartBuf[handle->uartDev] = handle->buffer;
-}
-
-/**
- * Clear uart buffer and set index counter to 0
- * @param handle Handle to the uart instance.
- */
-static void uartFlush(drv_uartHandle_t handle)
-{
-    memset((uint8_t*) handle->buffer, 0, sizeof (handle->buffer));
-    handle->bufIndex = 0;
-}
-
 static void uartHandlers(void *data, uint8_t source)
 {
     switch (source) {
         case _UART1_VECTOR:
-            if(handlers[UART_DEV1])
-                handlers[UART_DEV1](data);
+            if(handlers[UART_DEV1]->onReceive)
+                handlers[UART_DEV1]->onReceive(data, U1STAbits.URXISEL);
             break;
         case _UART2_VECTOR:
-            if(handlers[UART_DEV2])
-                handlers[UART_DEV2](data);
+            if(handlers[UART_DEV2]->onReceive)
+                handlers[UART_DEV2]->onReceive(data, U2STAbits.URXISEL);
             break;
     }
 }
@@ -133,18 +117,30 @@ static void uartHandlers(void *data, uint8_t source)
 void __ISR(_UART1_VECTOR, ipl6auto) uart1Handler(void)
 {
     uint8_t i;
-    for (i = 0; i < U1STAbits.URXISEL; i++)
-        uartBuf[UART_DEV1][i] = U1RXREG;
-    uartHandlers((void*) uartBuf, _UART1_VECTOR);
+    bool hasWoken = false;
+    uint8_t uartBuf[U1STAbits.URXISEL];
+    for (i = 0; i < U1STAbits.URXISEL; i++) {
+        uartBuf[i] = U1RXREG;
+        xQueueSendToBackFromISR(handlers[UART_DEV1]->queueHandle, &uartBuf[i], 
+                (BaseType_t *)&hasWoken);
+        portYIELD_FROM_ISR(hasWoken);
+    }
+    uartHandlers((void*)uartBuf, _UART1_VECTOR);
     IFS0CLR = IFS0_U1E_BIT;
 }
 
 void __ISR(_UART2_VECTOR, ipl1auto) uart2Handler(void)
 {
     uint8_t i;
-    for (i = 0; i < 4; i++)
-        uartBuf[UART_DEV2][i] = U1RXREG;
-    uartHandlers((void*) uartBuf, _UART2_VECTOR);
+    bool hasWoken = false;
+    uint8_t uartBuf[U2STAbits.URXISEL];
+    for (i = 0; i < U2STAbits.URXISEL; i++) {
+        uartBuf[i] = U2RXREG;
+        xQueueSendToBackFromISR(handlers[UART_DEV2]->queueHandle, &uartBuf[i], 
+                (BaseType_t *)&hasWoken);
+        portYIELD_FROM_ISR(hasWoken);
+    }
+    uartHandlers((void*)uartBuf, _UART2_VECTOR);
     IFS1CLR = IFS1_U2E_BIT;
 }
 
@@ -156,11 +152,13 @@ drv_uartHandle_t drv_uartNew(drv_uartConfig_t *config)
     drv_uartSetDataBits(handle, config->dataBits);
     drv_uartSetStopBit(handle, config->stopBits);
     drv_uartSetFifoSize(handle, config->fifoSize);
-    handle->buffer = calloc(1, config->bufferSize);
-
+    handle->queueHandle = xQueueCreate(config->bufferSize, sizeof(uint8_t));
+    if(handle->queueHandle == NULL)
+        return NULL;
     if (config->isBlocking)
         uartEnableInt(handle, config->intPriority);
     uartModeSetFlags(handle, U_ON);
+    handlers[config->uartDev] = handle;
     return handle;
 }
 
@@ -272,10 +270,14 @@ uint8_t drv_uartGets(drv_uartHandle_t handle, uint8_t *data)
     return i;
 }
 
-int8_t drv_uartTryGets(drv_uartHandle_t handle, uint8_t *data)
+uint8_t drv_uartTryGets(drv_uartHandle_t handle, uint8_t *data)
 {
-    //TODO implement interrupt based reading
-    return 0;
+    uint8_t ret;
+    uint8_t i;
+    for (i = 0; i < uxQueueMessagesWaiting(handle->queueHandle); i++) {
+        ret = xQueueReceive(handle->queueHandle, (void*)&data[i], 0);
+    }
+    return ret;
 }
 
 void drv_uartSetOnReceive(drv_uartHandle_t handle, drv_uartEventHandler_t task)
@@ -340,6 +342,6 @@ void drv_uartSetFifoSize(drv_uartHandle_t handle, uartFifoSizes_t fifoSize)
 void drv_uartDestroy(drv_uartHandle_t handle)
 {
     uartModeClrFlags(handle, U_ON);
-    free((void*) handle->buffer);
+    vQueueDelete(handle->queueHandle);
     free(handle);
 }
