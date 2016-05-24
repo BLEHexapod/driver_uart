@@ -266,7 +266,7 @@ uint8_t drv_uartGets(drv_uartHandle_t handle, uint8_t *data)
     uint8_t i;
     for (i = 0; i < sizeof(data); i++) {
         data[i] = drv_uartGet(handle);
-    }
+    }   
     return i;
 }
 

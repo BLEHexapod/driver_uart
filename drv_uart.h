@@ -43,7 +43,7 @@ extern "C" {
 #define U_STSEL     0
 
 typedef struct drv_uartHandle *drv_uartHandle_t;
-typedef void(*drv_uartEventHandler_t)(void*);
+typedef void(*drv_uartEventHandler_t)(void*, uint8_t);
 
 typedef enum {
     BAUD1200 = 1200,
@@ -87,7 +87,7 @@ typedef struct {
     drv_uartEventHandler_t onReceive;   /**<Function to execute if the receive buffer is full*/
     uint8_t intPriority;                /**<Priority of the interrupt*/
     uartFifoSizes_t fifoSize;           /**<Size of the hardware FIFO buffer*/
-    size_t bufferSize;                  /**<Size of the software buffer*/
+    uint8_t bufferSize;                 /**<Size of the software buffer*/
 } drv_uartConfig_t;
 
 /**
@@ -163,16 +163,18 @@ uint8_t drv_uartGets(drv_uartHandle_t handle, uint8_t* data);
  * Try to receive a string using uart, this function is non-blocking and might need
  * to be called multiple times if the uart device is busy or no data is available.
  * @param handle    Handle to the uart instance.
- * @return 
+ * @param data      Buffer to store the received values in.
+ * @retval 0        Succes
+ * @retval 1        Error
  */
-int8_t drv_uartTryGets(drv_uartHandle_t handle, uint8_t *data);
+uint8_t drv_uartTryGets(drv_uartHandle_t handle, uint8_t *data);
 
 /**
  * Change the callback when a the uart buffer is full
  * @param task      function to excecute
  * @param handle    Handle to the uart instance.
  */
-void drv_uartSetOnReceive(drv_uartHandle_t handle, callback task);
+void drv_uartSetOnReceive(drv_uartHandle_t handle, drv_uartEventHandler_t task);
 
 /**
  * Change baudrate of a uart device
