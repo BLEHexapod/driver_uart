@@ -124,7 +124,7 @@ int8_t drv_uartTryPut(drv_uartHandle_t handle, uint8_t data);
  * @param handle    Handle to the uart instance.
  * @see uartPut
  */
-void drv_uartPuts(drv_uartHandle_t handle, uint8_t data[]);
+void drv_uartPuts(drv_uartHandle_t handle, uint8_t *data);
 
 /**
  * Try to send a string using uart, this function is non-blocking and might need
